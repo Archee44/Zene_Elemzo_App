@@ -1,0 +1,26 @@
+            {(result.approachability_model_name || result.approachability_top || result.approachability_score) && (
+              <div style={{ marginTop: 16 }}>
+                <h3>Megközelíthetőség</h3>
+                {result.approachability_model_name && (
+                  <Text size="sm" color="dimmed">Modell: {result.approachability_model_name}</Text>
+                )}
+                {typeof result.approachability_score === 'number' && (
+                  <div style={{ marginTop: 8 }}>
+                    <Text><strong>Érték:</strong> {(Number(result.approachability_score) * 100).toFixed(1)}%</Text>
+                    <Progress value={pct(result.approachability_score)} radius="sm" />
+                  </div>
+                )}
+                {result.approachability_top && (
+                  <Text style={{ marginTop: 8 }}><strong>Kategória:</strong> {result.approachability_top}</Text>
+                )}
+                {Array.isArray(result.approachability_candidates) && result.approachability_candidates.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    {result.approachability_candidates.slice(0, 5).map((c) => (
+                      <div key={c.label} style={{ marginBottom: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                          <Text size="sm" fw={600}>{c.label}</Text>
+                          <Text size="sm" color="dimmed">{(Number(c.score) * 100).toFixed(1)}%</Text>
+                        </div>
+                        <Progress value={pct(c.score)} radius="sm" />
+                      </div>
+                    ))}

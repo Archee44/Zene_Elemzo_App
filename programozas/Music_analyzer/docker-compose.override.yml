@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  backend:
+    environment:
+      - FLASK_DEBUG=1
+      - TF_CPP_MIN_LOG_LEVEL=2
+    # Mount the whole app for instant code reload in dev
+    volumes:
+      - ./:/app
+      - ./uploads:/app/uploads
+      - ./models:/app/models
+    # Override command to enable the Flask reloader
+    command: ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]

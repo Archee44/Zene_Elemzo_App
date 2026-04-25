@@ -1,0 +1,301 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Music Analyzer API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:5000" }
+  ],
+  "paths": {
+    "/api/music/analyze": {
+      "post": {
+        "summary": "Analyze uploaded audio file",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": { "file": { "type": "string", "format": "binary" } },
+                "required": ["file"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Analysis result (Librosa core fields + optional external features)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisResult"
+                }
+              }
+            }
+          },
+          "400": { "description": "No file uploaded or validation error" }
+        }
+      }
+    },
+    "/api/music/uploads/{filename}": {
+      "get": {
+        "summary": "Serve uploaded audio file",
+        "parameters": [
+          { "name": "filename", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Audio stream" }, "404": { "description": "File not found" } }
+      }
+    },
+    "/api/music/recommend/{track_id}": {
+      "get": {
+        "summary": "Get AI-based recommendations",
+        "parameters": [
+          { "name": "track_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Recommendation list" } }
+      }
+    },
+    "/api/music/recommend/index/rebuild": {
+      "post": {
+        "summary": "Rebuild FAISS recommendation index",
+        "responses": {
+          "200": { "description": "Index rebuild stats" },
+          "503": { "description": "FAISS not installed" },
+          "500": { "description": "Unexpected server error" }
+        }
+      }
+    },
+    "/api/music/clusters/rebuild": {
+      "post": {
+        "summary": "Rebuild song clusters",
+        "responses": {
+          "200": { "description": "Cluster rebuild stats" },
+          "503": { "description": "Clustering backend is not installed" },
+          "500": { "description": "Unexpected server error" }
+        }
+      }
+    },
+    "/api/music/musicbrainz/search": {
+      "post": {
+        "summary": "Search MusicBrainz recording by title and artist",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "artist": { "type": "string" }
+                },
+                "required": ["title", "artist"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Best MusicBrainz match" },
+          "400": { "description": "Missing title or artist" },
+          "404": { "description": "No MusicBrainz match found" }
+        }
+      }
+    },
+    "/api/music/musicbrainz/enrich/{song_id}": {
+      "post": {
+        "summary": "Enrich a stored song with MusicBrainz metadata",
+        "parameters": [
+          { "name": "song_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Song enriched with MBID and release metadata" },
+          "404": { "description": "Song not found or no MusicBrainz match found" }
+        }
+      }
+    },
+    "/api/music/search-lyrics": {
+      "post": {
+        "summary": "Search songs by lyrics snippet (Genius)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "snippet": { "type": "string" } },
+                "required": ["snippet"]
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Song candidates" }, "404": { "description": "No results" } }
+      }
+    },
+    "/api/music/search-artist": {
+      "post": {
+        "summary": "Search artist profile and top songs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Artist profile result" },
+          "404": { "description": "Artist not found" }
+        }
+      }
+    },
+    "/api/music/search-discover": {
+      "post": {
+        "summary": "Discover tracks by genre, mood and popularity filters",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "genre": { "type": "string" },
+                  "mood": { "type": "string" },
+                  "popularityMode": { "type": "string" },
+                  "releaseRange": { "type": "string" },
+                  "explicitMode": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Discovered tracks" },
+          "500": { "description": "Spotify search error" }
+        }
+      }
+    },
+    "/api/music/search-discover/progress": {
+      "get": {
+        "summary": "Get progress of discover search",
+        "responses": {
+          "200": { "description": "Current discover progress percentage" }
+        }
+      }
+    },
+    "/api/music/youtube": {
+      "get": {
+        "summary": "Find YouTube video for artist + title",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Video URL" }, "404": { "description": "No results" } }
+      }
+    },
+    "/api/music/spotify": {
+      "get": {
+        "summary": "Find Spotify track URL for artist + title",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Track URL" }, "404": { "description": "No results" } }
+      }
+    },
+    "/api/music/recommend-external": {
+      "post": {
+        "summary": "Recommend tracks from local database by query or analyzed features",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": { "type": "string" },
+                  "features": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Seed track and recommendation list" },
+          "400": { "description": "Missing search input" },
+          "404": { "description": "No matching local seed track found" }
+        }
+      }
+    },
+    "/api/music/genius-top": {
+      "get": {
+        "summary": "Get current Genius chart top tracks",
+        "responses": {
+          "200": { "description": "Top track list" },
+          "404": { "description": "No chart data found" }
+        }
+      }
+    },
+    "/api/music/reccobeats-features": {
+      "get": {
+        "summary": "Get audio features from ReccoBeats by IDs (Spotify or ReccoBeats IDs)",
+        "parameters": [
+          { "name": "ids", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Comma separated IDs (1-40)" },
+          { "name": "spotify_id", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Single Spotify ID" }
+        ],
+        "responses": {
+          "200": { "description": "ReccoBeats features list (content array)" },
+          "400": { "description": "Missing ids or spotify_id" },
+          "500": { "description": "ReccoBeats/API error" }
+        }
+      }
+    },
+    "/api/spotify/login": {
+      "get": {
+        "summary": "Start Spotify OAuth login",
+        "responses": { "302": { "description": "Redirect to Spotify authorize" } }
+      }
+    },
+    "/api/spotify/callback": {
+      "get": {
+        "summary": "Spotify OAuth callback",
+        "parameters": [
+          { "name": "code", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": { "302": { "description": "Redirect to frontend with token or error" }, "400": { "description": "Missing code or token error" } }
+      }
+    }
+  }
+  ,
+  "components": {
+    "schemas": {
+      "AnalysisResult": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "artist": { "type": "string" },
+          "genre": { "type": "string" },
+          "duration": { "type": "number", "format": "float" },
+          "bpm": { "type": "integer" },
+          "rms": { "type": "number", "format": "float" },
+          "camelot": { "type": "string" },
+
+          "danceability": { "type": "number", "format": "float", "nullable": true },
+          "energy": { "type": "number", "format": "float", "nullable": true },
+          "valence": { "type": "number", "format": "float", "nullable": true },
+          "acousticness": { "type": "number", "format": "float", "nullable": true },
+          "instrumentalness": { "type": "number", "format": "float", "nullable": true },
+          "liveness": { "type": "number", "format": "float", "nullable": true },
+          "loudness": { "type": "number", "format": "float", "nullable": true },
+          "speechiness": { "type": "number", "format": "float", "nullable": true },
+          "tempo": { "type": "number", "format": "float", "nullable": true }
+        },
+        "required": ["title", "artist", "genre", "duration", "bpm", "rms", "camelot"]
+      }
+    }
+  }
+}

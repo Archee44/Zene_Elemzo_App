@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: music_analyzer_backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+      - ./models:/app/models
+    restart: unless-stopped
+
+  # Optional: React dev server (uncomment if you want to run frontend in Docker)
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: music_analyzer_frontend
+  #   ports:
+  #     - "3000:3000"
+  #   env_file:
+  #     - ./frontend/.env
+  #   volumes:
+  #     - ./frontend:/app
+  #   command: ["npm", "start"]
+  #   restart: unless-stopped

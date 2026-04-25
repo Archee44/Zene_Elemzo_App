@@ -1,0 +1,40 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.so
+*.egg
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- IDE / Editor ----
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---- Logs / Databases / Misc ----
+*.log
+*.sqlite3
+db.sqlite3
+
+# ---- Jupyter Notebook ----
+.ipynb_checkpoints/
+
+# ---- macOS / Windows ----
+.DS_Store
+Thumbs.db
+
+music.db
+
+.env

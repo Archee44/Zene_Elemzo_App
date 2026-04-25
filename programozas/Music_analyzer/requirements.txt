@@ -1,0 +1,24 @@
+# Web framework
+Flask==3.0.3
+flask-cors==4.0.0
+
+# ORM és adatbázis
+SQLAlchemy==2.0.36
+
+# Audio elemzés
+librosa==0.10.2.post1
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.5.2
+soundfile==0.12.1
+audioread==3.0.1
+ytmusicapi==1.10.3
+
+# Metaadatok olvasása (ID3 tagek)
+mutagen==1.47.0
+
+# JSON kezelés és API
+pydantic==2.9.2
+
+# Fejlesztéshez
+python-dotenv==1.0.1
