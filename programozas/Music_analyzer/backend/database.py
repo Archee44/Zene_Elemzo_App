@@ -27,6 +27,7 @@ def init_db():
 def _ensure_schema_updates():
     inspector = inspect(engine)
     song_columns = {col["name"] for col in inspector.get_columns("songs")}
+    link_columns = {col["name"] for col in inspector.get_columns("external_links")}
 
     with engine.begin() as conn:
         if "genre" not in song_columns:
@@ -41,3 +42,7 @@ def _ensure_schema_updates():
             conn.execute(text("ALTER TABLE songs ADD COLUMN genre_variant_count INTEGER"))
         if "cluster_id" not in song_columns:
             conn.execute(text("ALTER TABLE songs ADD COLUMN cluster_id INTEGER"))
+        if "link_is_valid" not in link_columns:
+            conn.execute(text("ALTER TABLE external_links ADD COLUMN link_is_valid BOOLEAN"))
+        if "link_checked_at" not in link_columns:
+            conn.execute(text("ALTER TABLE external_links ADD COLUMN link_checked_at DATETIME"))

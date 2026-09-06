@@ -56,6 +56,10 @@ export default function Layout() {
                     style={{ fontWeight: 600, fontSize: 18, padding: "14px 20px", color: dark ? "#FFFFFF" : "#0C1A2A", borderRadius: 8, transition: "all 0.25s ease" }}
                     onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = dark ? "#483d8b" : "#FFD966") }
                     onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent") }> Kereső </Menu.Item>
+                <Menu.Item component={Link} to="/profile" onClick={() => handleClick("/profile")}
+                    style={{ fontWeight: 600, fontSize: 18, padding: "14px 20px", color: dark ? "#FFFFFF" : "#0C1A2A", borderRadius: 8, transition: "all 0.25s ease" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = dark ? "#483d8b" : "#FFD966") }
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent") }> Profil </Menu.Item>
               </Menu.Dropdown>
             </Menu>
             <ActionIcon onClick={toggleColorScheme} variant="light" size="lg" radius="xl" title="Téma váltása"> {dark ? <IconSun size={20} /> : <IconMoonStars size={20} />}</ActionIcon>

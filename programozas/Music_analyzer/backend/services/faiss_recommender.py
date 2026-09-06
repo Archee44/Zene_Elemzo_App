@@ -337,7 +337,12 @@ def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[
         song_ids = _STATE.song_ids
         if idx is None or song_ids is None:
             return None
-        distances, neighbors = idx.search(q, max(limit * 5, limit + 5))
+        # Genre/cluster reranking below only ever sees whatever comes back from this
+        # raw vector search, so with a genre-imbalanced catalog (a handful of songs
+        # per genre out of thousands) a narrow top-k can miss every matching-genre
+        # candidate. Cast a much wider net and let the reranking narrow it down.
+        k = min(int(song_ids.shape[0]), max(limit * 50, 300))
+        distances, neighbors = idx.search(q, k)
 
     candidate_ids: List[int] = []
     vector_scores: Dict[int, float] = {}

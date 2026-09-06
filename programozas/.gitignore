@@ -38,3 +38,6 @@ Thumbs.db
 music.db
 
 .env
+
+# ---- Downloaded datasets (large, not source) ----
+Music_analyzer/data/

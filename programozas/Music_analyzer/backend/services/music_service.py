@@ -122,11 +122,27 @@ def get_or_create_song_from_file(file_path: str, db: Session) -> Song:
         source_type=SourceTypeEnum.user_upload
     )
 
+    # Prefer values computed by the same algorithms used for the MTG-Jamendo catalog
+    # import (real Essentia Danceability, the trained valence/arousal model) so that
+    # user-uploaded and catalog-seeded songs land on the same comparable scale.
+    # Fall back to the cheaper local heuristics only when those aren't available.
+    danceability = analysis_result.get("danceability_essentia")
+    if danceability is None:
+        danceability = analysis_result.get("danceability_local")
+
+    energy = analysis_result.get("arousal")
+    if energy is None:
+        energy = analysis_result.get("energy_local")
+
+    valence = analysis_result.get("valence")
+    if valence is None:
+        valence = analysis_result.get("valence_local")
+
     new_features = AudioFeatures(
         tempo=analysis_result.get("bpm"),
-        energy=analysis_result.get("energy_local"),
-        danceability=analysis_result.get("danceability_local"),
-        valence=analysis_result.get("valence_local"),
+        energy=energy,
+        danceability=danceability,
+        valence=valence,
         loudness=analysis_result.get("replaygain_db"),
         spectral_centroid=analysis_result.get("spectral_centroid_mean"),
         spectral_bandwidth=analysis_result.get("spectral_bandwidth_mean"),

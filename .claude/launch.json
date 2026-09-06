@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "music-analyzer-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "programozas/Music_analyzer/frontend", "start"],
+      "port": 3000
+    }
+  ]
+}

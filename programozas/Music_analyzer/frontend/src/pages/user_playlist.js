@@ -36,18 +36,20 @@ export default function SpotifyUserPlaylist() {
     setLoadingPlaylist((slp) => ({ ...slp, [playlistId]: true}))
     try {
       const headers = { Authorization: `Bearer ${token}`};
-      let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`;
+      // Spotify retired GET /playlists/{id}/tracks in the Feb 2026 Dev Mode
+      // migration - it's /items now, and items[].track became items[].item.
+      let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
       const allTracks = [];
       while (url) {
         const res = await axios.get(url, { headers });
         allTracks.push(...res.data.items);
         url = res.data.next;
       }
-    
+
       const flat = allTracks
-        .filter((item) => item.track)
+        .filter((item) => item.item)
         .map((item) => {
-          const tr = item.track;
+          const tr = item.item;
           return {
             id: tr.id,
             name: tr.name,

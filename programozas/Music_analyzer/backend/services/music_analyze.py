@@ -166,6 +166,15 @@ def analyze_music(file_path: str, user_token=None):
     local_feats = compute_local_features(y, sr)
     rms = local_feats.get("rms_mean") or 0.0
     camelot = detect_camelot(y, sr)
+
+    danceability_essentia = None
+    try:
+        dfa_dance, _ = es.Danceability()(y)
+        # Same DFA-based algorithm and clamp used by AcousticBrainz/MTG-Jamendo,
+        # so uploaded and catalog-seeded songs share one comparable scale.
+        danceability_essentia = min(max(float(dfa_dance), 0.0), 1.0)
+    except Exception:
+        pass
     key_strength = None
     is_major = None
     try:
@@ -386,7 +395,7 @@ def analyze_music(file_path: str, user_token=None):
     result = {
         "title": title,
         "artist": artist,
-        "genre": preferred_macro or preferred_genre or (genre if genre != "Unknown Genre" else genre_local),
+        "genre": preferred_macro or preferred_genre or (genre if genre != "Unknown Genre" else genre_detailed),
         "genre_detailed": preferred_genre or genre_detailed,
         "genre_model": model_genres.get("genre_model"),
         "genre_model_candidates": model_genres.get("genre_model_candidates"),
@@ -406,6 +415,7 @@ def analyze_music(file_path: str, user_token=None):
         "replaygain_db": replaygain_db,
         "energy_local": energy_local,
         "danceability_local": danceability_local,
+        "danceability_essentia": danceability_essentia,
         "valence_local": valence_local,
         "key_strength": key_strength,
         **local_feats,

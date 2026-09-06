@@ -1,6 +1,7 @@
 import csv
 import os
 import sys
+from pathlib import Path
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if project_root not in sys.path:
@@ -20,10 +21,17 @@ def seed_if_empty() -> bool:
         db.close()
 
     if has_songs:
-        print("Database already contains songs. Skipping CSV seed.")
+        print("Database already contains songs. Skipping seed.")
         return False
 
-    print("Database is empty. Importing seed data from CSV.")
+    jamendo_data_dir = os.path.join(project_root, "data", "mtg_jamendo")
+    if os.path.isdir(jamendo_data_dir) and os.path.exists(os.path.join(jamendo_data_dir, "autotagging.tsv")):
+        print("Database is empty. Importing seed data from the MTG-Jamendo catalog.")
+        from backend.scripts.import_from_jamendo import import_data as import_jamendo_data
+        import_jamendo_data(Path(jamendo_data_dir))
+        return True
+
+    print("Database is empty. Importing seed data from CSV (no MTG-Jamendo data found).")
     import_data()
     return True
 

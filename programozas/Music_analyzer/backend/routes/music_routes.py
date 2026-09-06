@@ -13,11 +13,50 @@ from backend.models import Song, ExternalLink, PlatformNameEnum
 import re
 
 music_bp = Blueprint("music", __name__)
-UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'uploads'))
+UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'uploads'))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+MAX_KEPT_UPLOADS = 1
 
 def sanitize_filename(filename):
     return re.sub(r'[^\w\-_\.]', '_', filename)
+
+def _enforce_upload_retention(max_files=MAX_KEPT_UPLOADS):
+    """Keep only the most recently uploaded `max_files` audio files (plus their
+    cover art) so the uploads folder doesn't grow forever."""
+    cover_suffixes = ("_cover.jpg", "_cover.jpeg", "_cover.png")
+    try:
+        entries = [
+            f for f in os.listdir(UPLOAD_DIR)
+            if not f.endswith(cover_suffixes)
+        ]
+    except OSError:
+        return
+
+    entries_with_mtime = []
+    for name in entries:
+        path = os.path.join(UPLOAD_DIR, name)
+        try:
+            entries_with_mtime.append((os.path.getmtime(path), name))
+        except OSError:
+            continue
+
+    entries_with_mtime.sort(reverse=True)  # newest first
+    stale = entries_with_mtime[max_files:]
+
+    for _, name in stale:
+        base = os.path.splitext(name)[0]
+        try:
+            os.remove(os.path.join(UPLOAD_DIR, name))
+        except OSError:
+            pass
+        for suffix in cover_suffixes:
+            cover_path = os.path.join(UPLOAD_DIR, base + suffix)
+            if os.path.exists(cover_path):
+                try:
+                    os.remove(cover_path)
+                except OSError:
+                    pass
 
 @music_bp.before_request
 def before_request():
@@ -46,9 +85,10 @@ def analyze_and_save():
     try:
         song_object = get_or_create_song_from_file(filepath, db)
         analysis_data = analyze_music(filepath)
-        analysis_data.pop("path", None)
+        analysis_data["path"] = safe_name
         analysis_data['database_id'] = song_object.id
         analysis_data['message'] = f"Song processed. DB ID: {song_object.id}"
+        _enforce_upload_retention()
         return jsonify(analysis_data)
 
     except FileNotFoundError as e:
@@ -56,13 +96,12 @@ def analyze_and_save():
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
     except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
-    finally:
         if os.path.exists(filepath):
             try:
                 os.remove(filepath)
             except OSError:
                 pass
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
 
 @music_bp.route("/uploads/<path:filename>")
 def uploaded_file(filename):
@@ -741,7 +780,11 @@ def recommend_external():
             "error": "Nincs egyező seed dal a helyi adatbázisban.",
         })
 
-    raw_recs = recommend_similar_songs(seed_song.id, db, limit=12)
+    DESIRED_COUNT = 12
+    # Pull a wider pool than we need: some candidates will get dropped below
+    # because their only external link is a known-dead Jamendo track page, and
+    # we still want to end up with DESIRED_COUNT results.
+    raw_recs = recommend_similar_songs(seed_song.id, db, limit=DESIRED_COUNT * 4)
     if not raw_recs:
         return jsonify({
             "seed": seed_meta,
@@ -753,7 +796,12 @@ def recommend_external():
     links_by_song: dict[int, str] = {}
     if rec_ids:
         links = (
-            db.query(ExternalLink.song_id, ExternalLink.platform_name, ExternalLink.external_url)
+            db.query(
+                ExternalLink.song_id,
+                ExternalLink.platform_name,
+                ExternalLink.external_url,
+                ExternalLink.link_is_valid,
+            )
             .filter(ExternalLink.song_id.in_(rec_ids))
             .all()
         )
@@ -761,9 +809,14 @@ def recommend_external():
             PlatformNameEnum.spotify: 0,
             PlatformNameEnum.youtube: 1,
             PlatformNameEnum.deezer: 2,
+            PlatformNameEnum.jamendo: 3,
         }
         best_rank: dict[int, int] = {}
-        for song_id, platform_name, external_url in links:
+        for song_id, platform_name, external_url, link_is_valid in links:
+            if link_is_valid is False:
+                # Confirmed dead (checked against the live Jamendo API) - never
+                # surface it, regardless of rank.
+                continue
             rank = priority.get(platform_name, 99)
             prev = best_rank.get(song_id, 999)
             if rank < prev:
@@ -773,14 +826,21 @@ def recommend_external():
     recommendations = []
     for r in raw_recs:
         sid = int(r.get("id", 0))
+        url = links_by_song.get(sid)
+        if url is None:
+            # Every link we had for this song was confirmed dead - skip it
+            # rather than recommend a track the user can't actually open.
+            continue
         recommendations.append({
             "id": sid,
             "title": r.get("title"),
             "artist": r.get("artist"),
             "score": r.get("score"),
-            "url": links_by_song.get(sid, ""),
+            "url": url,
             "source": "database",
         })
+        if len(recommendations) >= DESIRED_COUNT:
+            break
 
     return jsonify({
         "seed": seed_meta,

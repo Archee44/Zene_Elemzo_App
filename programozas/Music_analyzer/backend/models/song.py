@@ -1,13 +1,14 @@
 import enum
 from sqlalchemy import (
-    Column, 
-    Integer, 
-    String, 
-    Float, 
-    DateTime, 
-    ForeignKey, 
+    Column,
+    Integer,
+    String,
+    Float,
+    DateTime,
+    ForeignKey,
     Enum,
-    JSON
+    JSON,
+    Boolean
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -62,6 +63,7 @@ class PlatformNameEnum(enum.Enum):
     spotify = "spotify"
     youtube = "youtube"
     deezer = "deezer"
+    jamendo = "jamendo"
 
 class ExternalLink(Base):
     __tablename__ = "external_links"
@@ -71,5 +73,8 @@ class ExternalLink(Base):
     platform_name = Column(Enum(PlatformNameEnum), nullable=False)
     external_url = Column(String, nullable=False)
     external_id = Column(String, index=True, nullable=True)
+    # NULL = not checked yet, True/False = result of the last liveness check
+    link_is_valid = Column(Boolean, nullable=True, index=True)
+    link_checked_at = Column(DateTime(timezone=True), nullable=True)
 
     song = relationship("Song", back_populates="external_links")
