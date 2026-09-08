@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 import os
 from backend.routes.spotify_routes import spotify_bp
+from backend.services.google_auth import google_auth_bp
+from backend.routes.auth_routes import auth_bp
 
 project_root = Path(__file__).resolve().parent
 if str(project_root) not in sys.path:
@@ -16,6 +18,11 @@ if str(project_root) not in sys.path:
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "default_secret_key")
+if app.secret_key == "default_secret_key":
+    print(
+        "WARNING: FLASK_SECRET_KEY is not set in .env - using the insecure default. "
+        "Auth tokens signed with this key can be forged. Set a random FLASK_SECRET_KEY before relying on login."
+    )
 app.config.update(
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_SAMESITE="None"
@@ -36,6 +43,8 @@ GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
 app.register_blueprint(music_bp, url_prefix="/api/music")
 app.register_blueprint(spotify_auth, url_prefix="/api/spotify")
 app.register_blueprint(spotify_bp, url_prefix="/api/spotify")
+app.register_blueprint(google_auth_bp, url_prefix="/api/auth")
+app.register_blueprint(auth_bp, url_prefix="/api/auth")
 
 
 # OpenAPI spec and Swagger UI

@@ -92,8 +92,12 @@ def extract_features(json_path: Path) -> Optional[dict]:
         lowlevel = data.get("lowlevel", {})
         audio_props = data.get("metadata", {}).get("audio_properties", {})
 
+        # Essentia's Danceability (DFA-based) output isn't bounded to [0,1] - real
+        # tracks in this dataset range roughly 0.75-2.4 (median ~1.15). A hard
+        # clamp to 1.0 instead of a rescale saturates ~78% of the catalog at the
+        # ceiling, so rescale against the dataset's actual observed range first.
         danceability_raw = rhythm.get("danceability")
-        danceability = min(max(float(danceability_raw), 0.0), 1.0) if danceability_raw is not None else None
+        danceability = min(max(float(danceability_raw), 0.0), 2.5) / 2.5 if danceability_raw is not None else None
 
         # Essentia's lowlevel.spectral_spread is a variance (Hz^2); our own pipeline's
         # spectral_bandwidth_mean is a standard deviation (Hz) - sqrt() to match units.

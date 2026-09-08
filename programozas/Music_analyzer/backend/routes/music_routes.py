@@ -9,7 +9,10 @@ from backend.services.faiss_recommender import rebuild_index, is_available as is
 from backend.services.music_analyze import analyze_music                                            
 from backend.services.musicbrainz_service import enrich_song_from_musicbrainz, search_best_recording
 from backend.services.reccobeats import get_features_by_ids
-from backend.models import Song, ExternalLink, PlatformNameEnum
+from backend.services.auth_utils import require_auth
+from backend.services import rating_service, youtube_service
+from backend.services.catalog_match import find_song_by_title_artist
+from backend.models import Song, ExternalLink, PlatformNameEnum, Playlist, PlaylistSong, PlaylistSourceEnum
 import re
 
 music_bp = Blueprint("music", __name__)
@@ -716,27 +719,9 @@ def recommend_external():
         artist = _norm(features.get("artist"))
         title = _norm(features.get("title"))
         if artist and title:
-            exact = (
-                db.query(Song)
-                .filter(
-                    Song.artist_name.ilike(artist),
-                    Song.title.ilike(title),
-                )
-                .first()
-            )
-            if exact:
-                return exact
-
-            partial = (
-                db.query(Song)
-                .filter(
-                    Song.artist_name.ilike(f"%{artist}%"),
-                    Song.title.ilike(f"%{title}%"),
-                )
-                .first()
-            )
-            if partial:
-                return partial
+            hit = find_song_by_title_artist(db, title, artist)
+            if hit:
+                return hit
 
         if query:
             q = _norm(query)
@@ -912,3 +897,208 @@ def reccobeats_features():
     except Exception as e:
         print("ReccoBeats features error:", e)
         return jsonify({"error": "Unexpected server error"}), 500
+
+
+@music_bp.route("/songs/<int:song_id>/rate", methods=["POST"])
+@require_auth
+def rate_song(song_id):
+    data = request.get_json(silent=True) or {}
+    rating = data.get("rating")
+    if rating not in ("like", "dislike"):
+        return jsonify({"error": "rating must be 'like' or 'dislike'"}), 400
+
+    db: Session = g.db
+    if not db.query(Song.id).filter(Song.id == song_id).first():
+        return jsonify({"error": "Song not found"}), 404
+
+    rating_service.set_rating(g.current_user.id, song_id, rating, db)
+    return jsonify({"ok": True, "rating": rating})
+
+
+@music_bp.route("/songs/<int:song_id>/rate", methods=["DELETE"])
+@require_auth
+def unrate_song(song_id):
+    db: Session = g.db
+    rating_service.remove_rating(g.current_user.id, song_id, db)
+    return jsonify({"ok": True})
+
+
+@music_bp.route("/favorites", methods=["GET"])
+@require_auth
+def favorites():
+    db: Session = g.db
+    return jsonify(rating_service.get_favorites(g.current_user.id, db))
+
+
+@music_bp.route("/taste-summary", methods=["GET"])
+@require_auth
+def taste_summary():
+    db: Session = g.db
+    return jsonify(rating_service.get_taste_summary(g.current_user.id, db))
+
+
+@music_bp.route("/catalog-search", methods=["GET"])
+def catalog_search():
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"results": []})
+
+    db: Session = g.db
+    rows = (
+        db.query(Song.id, Song.title, Song.artist_name, Song.genre)
+        .filter((Song.title.ilike(f"%{q}%")) | (Song.artist_name.ilike(f"%{q}%")))
+        .limit(20)
+        .all()
+    )
+    results = [
+        {"id": song_id, "title": title, "artist": artist_name, "genre": genre}
+        for song_id, title, artist_name, genre in rows
+    ]
+    return jsonify({"results": results})
+
+
+@music_bp.route("/youtube-playlists", methods=["GET"])
+@require_auth
+def youtube_playlists():
+    db: Session = g.db
+    access_token = youtube_service.get_valid_access_token(g.current_user.id, db)
+    if not access_token:
+        return jsonify({"error": "youtube_not_connected"}), 409
+    return jsonify({"playlists": youtube_service.list_playlists(access_token)})
+
+
+@music_bp.route("/youtube-playlists/<external_id>/import", methods=["POST"])
+@require_auth
+def import_youtube_playlist(external_id):
+    db: Session = g.db
+    access_token = youtube_service.get_valid_access_token(g.current_user.id, db)
+    if not access_token:
+        return jsonify({"error": "youtube_not_connected"}), 409
+
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "YouTube playlist").strip()
+
+    items = youtube_service.list_playlist_items(access_token, external_id)
+
+    playlist = (
+        db.query(Playlist)
+        .filter(
+            Playlist.user_id == g.current_user.id,
+            Playlist.source == PlaylistSourceEnum.youtube,
+            Playlist.external_id == external_id,
+        )
+        .first()
+    )
+    if playlist is None:
+        playlist = Playlist(
+            user_id=g.current_user.id,
+            name=name,
+            source=PlaylistSourceEnum.youtube,
+            external_id=external_id,
+        )
+        db.add(playlist)
+        db.flush()
+    else:
+        playlist.name = name
+        db.query(PlaylistSong).filter(PlaylistSong.playlist_id == playlist.id).delete()
+
+    matched = 0
+    for item in items:
+        title, artist_guess = youtube_service.parse_video_title(item["title"])
+        artist = artist_guess or item.get("channel_title")
+        song = find_song_by_title_artist(db, title, artist)
+        if song:
+            matched += 1
+        db.add(PlaylistSong(
+            playlist_id=playlist.id,
+            song_id=song.id if song else None,
+            position=item.get("position"),
+            raw_title=item["title"],
+            raw_artist=artist,
+        ))
+
+    db.commit()
+    total = len(items)
+    return jsonify({
+        "playlist_id": playlist.id,
+        "total": total,
+        "matched": matched,
+        "unmatched": total - matched,
+    })
+
+
+@music_bp.route("/playlists", methods=["GET"])
+@require_auth
+def list_playlists():
+    db: Session = g.db
+    from sqlalchemy import func as sa_func
+    rows = (
+        db.query(Playlist, sa_func.count(PlaylistSong.id))
+        .outerjoin(PlaylistSong, PlaylistSong.playlist_id == Playlist.id)
+        .filter(Playlist.user_id == g.current_user.id)
+        .group_by(Playlist.id)
+        .all()
+    )
+    return jsonify({
+        "playlists": [
+            {
+                "id": pl.id,
+                "name": pl.name,
+                "source": pl.source.value,
+                "item_count": count,
+            }
+            for pl, count in rows
+        ]
+    })
+
+
+@music_bp.route("/playlists/<int:playlist_id>", methods=["GET"])
+@require_auth
+def get_playlist(playlist_id):
+    db: Session = g.db
+    playlist = (
+        db.query(Playlist)
+        .filter(Playlist.id == playlist_id, Playlist.user_id == g.current_user.id)
+        .first()
+    )
+    if not playlist:
+        return jsonify({"error": "Playlist not found"}), 404
+
+    items = (
+        db.query(PlaylistSong, Song)
+        .outerjoin(Song, Song.id == PlaylistSong.song_id)
+        .filter(PlaylistSong.playlist_id == playlist.id)
+        .order_by(PlaylistSong.position)
+        .all()
+    )
+    return jsonify({
+        "id": playlist.id,
+        "name": playlist.name,
+        "source": playlist.source.value,
+        "items": [
+            {
+                "song_id": song.id if song else None,
+                "title": song.title if song else ps.raw_title,
+                "artist": song.artist_name if song else ps.raw_artist,
+                "genre": song.genre if song else None,
+                "matched": song is not None,
+            }
+            for ps, song in items
+        ],
+    })
+
+
+@music_bp.route("/playlists/<int:playlist_id>", methods=["DELETE"])
+@require_auth
+def delete_playlist(playlist_id):
+    db: Session = g.db
+    playlist = (
+        db.query(Playlist)
+        .filter(Playlist.id == playlist_id, Playlist.user_id == g.current_user.id)
+        .first()
+    )
+    if not playlist:
+        return jsonify({"error": "Playlist not found"}), 404
+    db.delete(playlist)
+    db.commit()
+    return jsonify({"ok": True})

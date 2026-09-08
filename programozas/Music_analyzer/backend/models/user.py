@@ -1,13 +1,14 @@
 import enum
 from sqlalchemy import (
-    Column, 
-    Integer, 
-    String, 
-    DateTime, 
-    ForeignKey, 
+    Column,
+    Integer,
+    String,
+    DateTime,
+    ForeignKey,
     Enum,
     Float,
-    JSON
+    JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -19,6 +20,9 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     username = Column(String, unique=True, index=True)
+    google_id = Column(String, unique=True, index=True, nullable=True)
+    display_name = Column(String, nullable=True)
+    avatar_url = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     interactions = relationship("UserInteraction", back_populates="user")
@@ -27,6 +31,7 @@ class User(Base):
 class InteractionTypeEnum(enum.Enum):
     play = "play"
     like = "like"
+    dislike = "dislike"
     skip = "skip"
     upload = "upload"
     search_result_click = "search_result_click"
@@ -52,3 +57,18 @@ class UserProfile(Base):
     last_updated = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="profile")
+
+class LinkedProviderEnum(enum.Enum):
+    youtube = "youtube"
+
+class UserLinkedAccount(Base):
+    __tablename__ = "user_linked_accounts"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_user_provider"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    provider = Column(Enum(LinkedProviderEnum), nullable=False)
+    access_token = Column(String, nullable=True)
+    refresh_token = Column(String, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    connected_at = Column(DateTime(timezone=True), server_default=func.now())

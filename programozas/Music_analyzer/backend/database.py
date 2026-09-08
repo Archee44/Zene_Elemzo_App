@@ -15,9 +15,10 @@ Base = declarative_base()
 def init_db():
 
     from backend.models.song import Song, AudioFeatures, ExternalLink
-    from backend.models.user import User, UserInteraction, UserProfile
+    from backend.models.user import User, UserInteraction, UserProfile, UserLinkedAccount
     from backend.models.queue import ProcessingQueue
-    
+    from backend.models.playlist import Playlist, PlaylistSong
+
     print("Creating database tables...")
     Base.metadata.create_all(bind=engine)
     _ensure_schema_updates()
@@ -28,6 +29,7 @@ def _ensure_schema_updates():
     inspector = inspect(engine)
     song_columns = {col["name"] for col in inspector.get_columns("songs")}
     link_columns = {col["name"] for col in inspector.get_columns("external_links")}
+    user_columns = {col["name"] for col in inspector.get_columns("users")}
 
     with engine.begin() as conn:
         if "genre" not in song_columns:
@@ -46,3 +48,12 @@ def _ensure_schema_updates():
             conn.execute(text("ALTER TABLE external_links ADD COLUMN link_is_valid BOOLEAN"))
         if "link_checked_at" not in link_columns:
             conn.execute(text("ALTER TABLE external_links ADD COLUMN link_checked_at DATETIME"))
+        if "google_id" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN google_id VARCHAR"))
+            # SQLite forbids UNIQUE in ALTER TABLE ADD COLUMN; add it as a separate
+            # unique index instead (NULLs are still treated as distinct from each other).
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id_unique ON users (google_id)"))
+        if "display_name" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR"))
+        if "avatar_url" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN avatar_url VARCHAR"))

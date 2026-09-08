@@ -170,9 +170,12 @@ def analyze_music(file_path: str, user_token=None):
     danceability_essentia = None
     try:
         dfa_dance, _ = es.Danceability()(y)
-        # Same DFA-based algorithm and clamp used by AcousticBrainz/MTG-Jamendo,
-        # so uploaded and catalog-seeded songs share one comparable scale.
-        danceability_essentia = min(max(float(dfa_dance), 0.0), 1.0)
+        # Same DFA-based algorithm and rescale used by AcousticBrainz/MTG-Jamendo
+        # (see import_from_jamendo.py), so uploaded and catalog-seeded songs share
+        # one comparable scale. A hard clamp to 1.0 instead of a rescale would
+        # saturate most real tracks at the ceiling, since raw values commonly run
+        # well above 1.0.
+        danceability_essentia = min(max(float(dfa_dance), 0.0), 2.5) / 2.5
     except Exception:
         pass
     key_strength = None
