@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 from flask import Blueprint, request, jsonify, g, send_from_directory
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from backend.services.music_service import get_or_create_song_from_file, recommend_similar_songs
@@ -12,7 +13,7 @@ from backend.services.reccobeats import get_features_by_ids
 from backend.services.auth_utils import require_auth
 from backend.services import rating_service, youtube_service
 from backend.services.catalog_match import find_song_by_title_artist
-from backend.models import Song, ExternalLink, PlatformNameEnum, Playlist, PlaylistSong, PlaylistSourceEnum
+from backend.models import Song, ExternalLink, PlatformNameEnum, Playlist, PlaylistSong, PlaylistSourceEnum, UserProfile
 import re
 
 music_bp = Blueprint("music", __name__)
@@ -20,6 +21,66 @@ UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 MAX_KEPT_UPLOADS = 1
+
+_LINK_PLATFORM_PRIORITY = {
+    PlatformNameEnum.spotify: 0,
+    PlatformNameEnum.youtube: 1,
+    PlatformNameEnum.deezer: 2,
+    PlatformNameEnum.jamendo: 3,
+}
+
+
+def _attach_live_links(db: Session, raw_recs: list, desired_count: int) -> list:
+    """Attaches the best confirmed-alive external link to each recommended
+    song, dropping songs whose every link is confirmed dead, and truncates to
+    desired_count. Callers should over-fetch raw_recs (e.g. desired_count*4)
+    to compensate for drops."""
+    rec_ids = [int(r["id"]) for r in raw_recs if r.get("id") is not None]
+    links_by_song: dict[int, str] = {}
+    if rec_ids:
+        links = (
+            db.query(
+                ExternalLink.song_id,
+                ExternalLink.platform_name,
+                ExternalLink.external_url,
+                ExternalLink.link_is_valid,
+            )
+            .filter(ExternalLink.song_id.in_(rec_ids))
+            .all()
+        )
+        best_rank: dict[int, int] = {}
+        for song_id, platform_name, external_url, link_is_valid in links:
+            if link_is_valid is False:
+                continue
+            rank = _LINK_PLATFORM_PRIORITY.get(platform_name, 99)
+            prev = best_rank.get(song_id, 999)
+            if rank < prev:
+                best_rank[song_id] = rank
+                links_by_song[song_id] = external_url
+
+    recommendations = []
+    for r in raw_recs:
+        sid = int(r.get("id", 0))
+        url = links_by_song.get(sid)
+        if url is None:
+            continue
+        recommendations.append({
+            "id": sid,
+            "title": r.get("title"),
+            "artist": r.get("artist"),
+            "genre": r.get("genre"),
+            "genre_family": r.get("genre_family"),
+            "tempo": r.get("tempo"),
+            "energy": r.get("energy"),
+            "danceability": r.get("danceability"),
+            "valence": r.get("valence"),
+            "score": r.get("score"),
+            "url": url,
+            "source": "database",
+        })
+        if len(recommendations) >= desired_count:
+            break
+    return recommendations
 
 def sanitize_filename(filename):
     return re.sub(r'[^\w\-_\.]', '_', filename)
@@ -777,55 +838,7 @@ def recommend_external():
             "source": "database",
         })
 
-    rec_ids = [int(r["id"]) for r in raw_recs if r.get("id") is not None]
-    links_by_song: dict[int, str] = {}
-    if rec_ids:
-        links = (
-            db.query(
-                ExternalLink.song_id,
-                ExternalLink.platform_name,
-                ExternalLink.external_url,
-                ExternalLink.link_is_valid,
-            )
-            .filter(ExternalLink.song_id.in_(rec_ids))
-            .all()
-        )
-        priority = {
-            PlatformNameEnum.spotify: 0,
-            PlatformNameEnum.youtube: 1,
-            PlatformNameEnum.deezer: 2,
-            PlatformNameEnum.jamendo: 3,
-        }
-        best_rank: dict[int, int] = {}
-        for song_id, platform_name, external_url, link_is_valid in links:
-            if link_is_valid is False:
-                # Confirmed dead (checked against the live Jamendo API) - never
-                # surface it, regardless of rank.
-                continue
-            rank = priority.get(platform_name, 99)
-            prev = best_rank.get(song_id, 999)
-            if rank < prev:
-                best_rank[song_id] = rank
-                links_by_song[song_id] = external_url
-
-    recommendations = []
-    for r in raw_recs:
-        sid = int(r.get("id", 0))
-        url = links_by_song.get(sid)
-        if url is None:
-            # Every link we had for this song was confirmed dead - skip it
-            # rather than recommend a track the user can't actually open.
-            continue
-        recommendations.append({
-            "id": sid,
-            "title": r.get("title"),
-            "artist": r.get("artist"),
-            "score": r.get("score"),
-            "url": url,
-            "source": "database",
-        })
-        if len(recommendations) >= DESIRED_COUNT:
-            break
+    recommendations = _attach_live_links(db, raw_recs, DESIRED_COUNT)
 
     return jsonify({
         "seed": seed_meta,
@@ -937,22 +950,53 @@ def taste_summary():
     return jsonify(rating_service.get_taste_summary(g.current_user.id, db))
 
 
+@music_bp.route("/recommend-for-me", methods=["GET"])
+@require_auth
+def recommend_for_me():
+    db: Session = g.db
+    DESIRED_COUNT = 8
+    raw_recs = rating_service.recommend_for_user(g.current_user.id, db, limit=DESIRED_COUNT * 4)
+    if raw_recs is None:
+        return jsonify({"recommendations": [], "ready": False}), 200
+    liked_ids = rating_service._liked_song_ids(db, g.current_user.id)
+    reference = rating_service._reference_stats_for_song_ids(liked_ids, db)
+    return jsonify({
+        "recommendations": _attach_live_links(db, raw_recs, DESIRED_COUNT),
+        "reference": reference,
+        "ready": True,
+    }), 200
+
+
+@music_bp.route("/catalog-genres", methods=["GET"])
+def catalog_genres():
+    db: Session = g.db
+    rows = (
+        db.query(Song.genre_family, func.count(Song.id))
+        .filter(Song.genre_family.isnot(None))
+        .group_by(Song.genre_family)
+        .order_by(func.count(Song.id).desc())
+        .all()
+    )
+    return jsonify({"genres": [{"label": family, "count": count} for family, count in rows]})
+
+
 @music_bp.route("/catalog-search", methods=["GET"])
 def catalog_search():
     q = (request.args.get("q") or "").strip()
-    if not q:
+    genre_family = (request.args.get("genre_family") or "").strip()
+    if not q and not genre_family:
         return jsonify({"results": []})
 
     db: Session = g.db
-    rows = (
-        db.query(Song.id, Song.title, Song.artist_name, Song.genre)
-        .filter((Song.title.ilike(f"%{q}%")) | (Song.artist_name.ilike(f"%{q}%")))
-        .limit(20)
-        .all()
-    )
+    query = db.query(Song.id, Song.title, Song.artist_name, Song.genre, Song.genre_family)
+    if q:
+        query = query.filter((Song.title.ilike(f"%{q}%")) | (Song.artist_name.ilike(f"%{q}%")))
+    if genre_family:
+        query = query.filter(Song.genre_family == genre_family)
+    rows = query.limit(20).all()
     results = [
-        {"id": song_id, "title": title, "artist": artist_name, "genre": genre}
-        for song_id, title, artist_name, genre in rows
+        {"id": song_id, "title": title, "artist": artist_name, "genre": genre, "genre_family": genre_family}
+        for song_id, title, artist_name, genre, genre_family in rows
     ]
     return jsonify({"results": results})
 
@@ -1102,3 +1146,50 @@ def delete_playlist(playlist_id):
     db.delete(playlist)
     db.commit()
     return jsonify({"ok": True})
+
+
+@music_bp.route("/playlists/<int:playlist_id>/recommend", methods=["GET"])
+@require_auth
+def recommend_for_playlist(playlist_id):
+    db: Session = g.db
+    playlist = (
+        db.query(Playlist)
+        .filter(Playlist.id == playlist_id, Playlist.user_id == g.current_user.id)
+        .first()
+    )
+    if not playlist:
+        return jsonify({"error": "Playlist not found"}), 404
+
+    matched_ids = [
+        r[0] for r in db.query(PlaylistSong.song_id)
+        .filter(PlaylistSong.playlist_id == playlist.id, PlaylistSong.song_id.isnot(None))
+        .all()
+    ]
+    if not matched_ids:
+        return jsonify({
+            "playlist_id": playlist.id,
+            "recommendations": [],
+            "ready": False,
+            "reason": "no_matched_songs",
+        }), 200
+
+    DESIRED_COUNT = 6
+    rated_ids = rating_service._rated_song_ids(db, g.current_user.id)
+    raw_recs = rating_service.recommend_for_song_ids(
+        matched_ids, db, limit=DESIRED_COUNT * 4, extra_exclude_ids=rated_ids
+    )
+    if raw_recs is None:
+        return jsonify({
+            "playlist_id": playlist.id,
+            "recommendations": [],
+            "ready": False,
+            "reason": "unavailable",
+        }), 200
+
+    reference = rating_service._reference_stats_for_song_ids(matched_ids, db)
+    return jsonify({
+        "playlist_id": playlist.id,
+        "recommendations": _attach_live_links(db, raw_recs, DESIRED_COUNT),
+        "reference": reference,
+        "ready": True,
+    }), 200

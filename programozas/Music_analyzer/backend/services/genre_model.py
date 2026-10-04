@@ -110,21 +110,17 @@ def _first_existing(paths):
 _EFFNET_PRED = None
 _GENRE_CLF_CACHE = {}
 
-def infer_with_discogs400(filename: str) -> Optional[Dict]:
+def extract_discogs_embedding(filename: str) -> Optional[np.ndarray]:
+    """Runs just the Discogs-EffNet backbone and returns the raw per-frame
+    embedding matrix (shape (T, D)) - no genre classification. Shared by
+    infer_with_discogs400 (upload pipeline) and the catalog enrichment script,
+    so the embedding is only ever computed once per file."""
     if es is None:
-        print("[genre_model] Essentia not available; cannot run Discogs400")
+        print("[genre_model] Essentia not available; cannot run Discogs-EffNet")
         return None
     effnet_pb = _first_existing(EFFNET_CANDIDATES)
-    genre_pb = _first_existing(GENRE_CANDIDATES)
-    labels_txt = _first_existing(LABELS_CANDIDATES)
-    labels_json = _first_existing(LABELS_JSON_CANDIDATES)
-    if not (effnet_pb and genre_pb and (labels_txt or labels_json)):
-        print("[genre_model] Missing model files:", {
-            'effnet': effnet_pb or 'NOT FOUND',
-            'genre': genre_pb or 'NOT FOUND',
-            'labels_txt': labels_txt or 'NOT FOUND',
-            'labels_json': labels_json or 'NOT FOUND',
-        })
+    if not effnet_pb:
+        print("[genre_model] Missing model file: effnet NOT FOUND")
         return None
     try:
         audio = load_mono(filename, sample_rate=16000)
@@ -147,6 +143,26 @@ def infer_with_discogs400(filename: str) -> Optional[Dict]:
         emb_np = np.asarray(embeddings)
         if emb_np.ndim == 1:
             emb_np = emb_np.reshape(1, -1)
+        return emb_np
+    except Exception as e:
+        print("[genre_model] Discogs-EffNet embedding error:", str(e))
+        return None
+
+def infer_with_discogs400(filename: str) -> Optional[Dict]:
+    genre_pb = _first_existing(GENRE_CANDIDATES)
+    labels_txt = _first_existing(LABELS_CANDIDATES)
+    labels_json = _first_existing(LABELS_JSON_CANDIDATES)
+    if not (genre_pb and (labels_txt or labels_json)):
+        print("[genre_model] Missing model files:", {
+            'genre': genre_pb or 'NOT FOUND',
+            'labels_txt': labels_txt or 'NOT FOUND',
+            'labels_json': labels_json or 'NOT FOUND',
+        })
+        return None
+    emb_np = extract_discogs_embedding(filename)
+    if emb_np is None:
+        return None
+    try:
         clf = _GENRE_CLF_CACHE.get(genre_pb)
         if clf is None:
             clf = es.TensorflowPredict2D(
@@ -173,6 +189,7 @@ def infer_with_discogs400(filename: str) -> Optional[Dict]:
             'model_name': 'discogs400-effnet',
             'top': top_label,
             'candidates': pairs,
+            'embedding': emb_np.mean(axis=0).astype(np.float32),
         }
     except Exception as e:
         print("[genre_model] Discogs400 inference error:", str(e))
@@ -206,6 +223,7 @@ def predict_genres(filename: str) -> Dict:
         'genre_model_candidates': [],
         'genre_model_macro': None,
         'genre_model_name': None,
+        'genre_model_embedding': None,
     }
 
     res = infer_with_discogs400(filename)
@@ -217,5 +235,6 @@ def predict_genres(filename: str) -> Dict:
             {'label': l, 'score': float(s)} for l, s in cands
         ]
         out['genre_model_macro'] = macro_from_candidates(cands)
+        out['genre_model_embedding'] = res.get('embedding')
 
     return out

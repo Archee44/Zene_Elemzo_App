@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from threading import Lock
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -15,6 +16,19 @@ except Exception:
     faiss = None
 
 FEATURE_DIM = 8
+
+# Starting weight for the optional content-embedding similarity term in
+# _search_and_rank - see Phase 4 of the plan for the reasoning. Must be
+# empirically validated (liked-vs-disliked separation test) before being
+# trusted at scale; kept as a single easy-to-retune constant for that reason.
+EMBEDDING_SIMILARITY_WEIGHT = 40.0
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    na = float(np.linalg.norm(a))
+    nb = float(np.linalg.norm(b))
+    if na < 1e-9 or nb < 1e-9:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
 
 def _clamp(v: Optional[float], lo: float, hi: float, default: float = 0.0) -> float:
     try:
@@ -278,60 +292,19 @@ def _ensure_index(db: Session) -> bool:
     with _LOCK:
         return _STATE.index is not None and _STATE.song_ids is not None
 
-def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[List[Dict]]:
-    if not _ensure_index(db):
-        return None
-
-    row = (
-        db.query(
-            Song.genre,
-            Song.genre_family,
-            Song.raw_genres,
-            Song.genre_confidence,
-            Song.genre_variant_count,
-            Song.cluster_id,
-            AudioFeatures.tempo,
-            AudioFeatures.energy,
-            AudioFeatures.danceability,
-            AudioFeatures.valence,
-            AudioFeatures.acousticness,
-            AudioFeatures.loudness,
-            AudioFeatures.spectral_centroid,
-            AudioFeatures.spectral_bandwidth,
-        )
-        .join(Song, Song.id == AudioFeatures.song_id)
-        .filter(AudioFeatures.song_id == song_id)
-        .first()
-    )
-    if row is None:
-        return []
-
-    seed_genre = (row[0] or "").strip().lower()
-    seed_genre_family = (row[1] or "").strip().lower()
-    seed_raw_genres = _raw_genre_set(row[2])
-    seed_confidence = (row[3] or "").strip().lower()
-    seed_variant_count = row[4]
-    seed_cluster_id = row[5]
-    with _LOCK:
-        global_medians = _STATE.global_medians or {name: 0.0 for name in _FEATURE_NAMES}
-        family_medians = _STATE.family_medians or {}
-    filled = _impute_feature_tuple(
-        row[1],
-        row[6:],
-        global_medians,
-        family_medians,
-    )
-    q = _vector_from_values(
-        filled[0],
-        filled[1],
-        filled[2],
-        filled[3],
-        filled[4],
-        filled[5],
-        filled[6],
-        filled[7],
-    ).reshape(1, -1)
-
+def _search_and_rank(
+    q: np.ndarray,
+    db: Session,
+    limit: int,
+    exclude_ids: set[int],
+    seed_genre: str,
+    seed_genre_family: str,
+    seed_raw_genres: set[str],
+    seed_confidence: str,
+    seed_variant_count: Optional[int],
+    seed_cluster_id: Optional[int],
+    seed_embedding: Optional[Sequence[float]] = None,
+) -> Optional[List[Dict]]:
     with _LOCK:
         idx = _STATE.index
         song_ids = _STATE.song_ids
@@ -350,7 +323,7 @@ def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[
         if pos < 0:
             continue
         sid = int(song_ids[pos])
-        if sid == song_id or sid in vector_scores:
+        if sid in exclude_ids or sid in vector_scores:
             continue
         vector_scores[sid] = float(score)
         candidate_ids.append(sid)
@@ -369,7 +342,13 @@ def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[
             Song.genre_confidence,
             Song.genre_variant_count,
             Song.cluster_id,
+            AudioFeatures.tempo,
+            AudioFeatures.energy,
+            AudioFeatures.danceability,
+            AudioFeatures.valence,
+            AudioFeatures.embedding_vector,
         )
+        .outerjoin(AudioFeatures, AudioFeatures.song_id == Song.id)
         .filter(Song.id.in_(candidate_ids))
         .all()
     )
@@ -384,9 +363,20 @@ def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[
             "genre_confidence": s.genre_confidence,
             "genre_variant_count": s.genre_variant_count,
             "cluster_id": s.cluster_id,
+            "tempo": s.tempo,
+            "energy": s.energy,
+            "danceability": s.danceability,
+            "valence": s.valence,
+            "embedding_vector": s.embedding_vector,
         }
         for s in songs
     }
+
+    seed_embedding_np: Optional[np.ndarray] = None
+    if seed_embedding is not None and len(seed_embedding) > 0:
+        candidate_arr = np.asarray(seed_embedding, dtype=np.float32)
+        if float(np.linalg.norm(candidate_arr)) > 1e-9:
+            seed_embedding_np = candidate_arr
 
     ranked: List[Tuple[float, int]] = []
     for sid in candidate_ids:
@@ -402,6 +392,12 @@ def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[
         cand_cluster_id = item.get("cluster_id")
         final_score += _confidence_score(cand_confidence)
         final_score += _variant_penalty(cand_variant_count)
+        if seed_embedding_np is not None:
+            cand_embedding = item.get("embedding_vector")
+            if cand_embedding:
+                final_score += _cosine_similarity(
+                    seed_embedding_np, np.asarray(cand_embedding, dtype=np.float32)
+                ) * EMBEDDING_SIMILARITY_WEIGHT
         final_score += _raw_genre_overlap_score(
             seed_raw_genres,
             cand_raw_genres,
@@ -453,6 +449,144 @@ def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[
         item = meta.get(sid)
         if item is None:
             continue
+        # embedding_vector (1280 floats) is only needed internally for
+        # scoring above - never useful to a caller/API response.
+        item = {k: v for k, v in item.items() if k != "embedding_vector"}
         item["score"] = round(final_score, 4)
         out.append(item)
     return out
+
+def recommend_by_song_id(song_id: int, db: Session, limit: int = 5) -> Optional[List[Dict]]:
+    if not _ensure_index(db):
+        return None
+
+    row = (
+        db.query(
+            Song.genre,
+            Song.genre_family,
+            Song.raw_genres,
+            Song.genre_confidence,
+            Song.genre_variant_count,
+            Song.cluster_id,
+            AudioFeatures.tempo,
+            AudioFeatures.energy,
+            AudioFeatures.danceability,
+            AudioFeatures.valence,
+            AudioFeatures.acousticness,
+            AudioFeatures.loudness,
+            AudioFeatures.spectral_centroid,
+            AudioFeatures.spectral_bandwidth,
+            AudioFeatures.embedding_vector,
+        )
+        .join(Song, Song.id == AudioFeatures.song_id)
+        .filter(AudioFeatures.song_id == song_id)
+        .first()
+    )
+    if row is None:
+        return []
+
+    seed_genre = (row[0] or "").strip().lower()
+    seed_genre_family = (row[1] or "").strip().lower()
+    seed_raw_genres = _raw_genre_set(row[2])
+    seed_confidence = (row[3] or "").strip().lower()
+    seed_variant_count = row[4]
+    seed_cluster_id = row[5]
+    seed_embedding = row[14]
+    with _LOCK:
+        global_medians = _STATE.global_medians or {name: 0.0 for name in _FEATURE_NAMES}
+        family_medians = _STATE.family_medians or {}
+    filled = _impute_feature_tuple(
+        row[1],
+        row[6:],
+        global_medians,
+        family_medians,
+    )
+    q = _vector_from_values(
+        filled[0],
+        filled[1],
+        filled[2],
+        filled[3],
+        filled[4],
+        filled[5],
+        filled[6],
+        filled[7],
+    ).reshape(1, -1)
+
+    return _search_and_rank(
+        q,
+        db,
+        limit,
+        {song_id},
+        seed_genre,
+        seed_genre_family,
+        seed_raw_genres,
+        seed_confidence,
+        seed_variant_count,
+        seed_cluster_id,
+        seed_embedding,
+    )
+
+def _pseudo_seed_from_song_ids(song_ids: Sequence[int], db: Session) -> Tuple[Optional[str], Optional[int]]:
+    """Derives a representative genre_family (and, when confident enough, a
+    dominant cluster_id) from a SET of songs via majority vote, so a query
+    vector aggregated from many songs (a profile or a playlist) can still
+    drive the same genre/cluster reranking bonuses that a single-song seed
+    normally provides."""
+    if not song_ids:
+        return None, None
+
+    family_counts = Counter(
+        (family or "").strip().lower()
+        for (family,) in db.query(Song.genre_family).filter(Song.id.in_(song_ids)).all()
+        if family
+    )
+    genre_family = family_counts.most_common(1)[0][0] if family_counts else None
+
+    cluster_counts = Counter(
+        cluster_id
+        for (cluster_id,) in db.query(Song.cluster_id).filter(Song.id.in_(song_ids)).all()
+        if cluster_id is not None
+    )
+    cluster_id = None
+    if cluster_counts:
+        top_cluster, top_count = cluster_counts.most_common(1)[0]
+        total = sum(cluster_counts.values())
+        if total >= 2 and top_count / total >= 0.5:
+            cluster_id = top_cluster
+
+    return genre_family, cluster_id
+
+def recommend_by_vector(
+    query_vector: Sequence[float],
+    db: Session,
+    limit: int = 5,
+    exclude_song_ids: Optional[Sequence[int]] = None,
+    genre_family_hint: Optional[str] = None,
+    cluster_id_hint: Optional[int] = None,
+    query_embedding: Optional[Sequence[float]] = None,
+) -> Optional[List[Dict]]:
+    """Same FAISS search + genre/cluster reranking as recommend_by_song_id, but
+    driven by an arbitrary pre-encoded query vector (e.g. a user's averaged
+    profile_vector) instead of one specific seed song. The caller is
+    responsible for handing in an already unit-normalized vector in the same
+    8-dim encoding as _vector_from_values - both current callers (rating_service's
+    recommend_for_user/recommend_for_song_ids) guarantee this. query_embedding
+    is the analogous pre-averaged Discogs-EffNet embedding, when available."""
+    if not _ensure_index(db):
+        return None
+
+    q = np.asarray(query_vector, dtype=np.float32).reshape(1, -1)
+
+    return _search_and_rank(
+        q,
+        db,
+        limit,
+        set(exclude_song_ids or []),
+        "",
+        (genre_family_hint or "").strip().lower(),
+        set(),
+        "medium",
+        None,
+        cluster_id_hint,
+        query_embedding,
+    )

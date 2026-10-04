@@ -146,7 +146,8 @@ def get_or_create_song_from_file(file_path: str, db: Session) -> Song:
         loudness=analysis_result.get("replaygain_db"),
         spectral_centroid=analysis_result.get("spectral_centroid_mean"),
         spectral_bandwidth=analysis_result.get("spectral_bandwidth_mean"),
-        mfcc_vector=analysis_result.get("hpcp_mean")
+        mfcc_vector=analysis_result.get("hpcp_mean"),
+        embedding_vector=analysis_result.get("embedding_vector"),
     )
 
     new_song.features = new_features

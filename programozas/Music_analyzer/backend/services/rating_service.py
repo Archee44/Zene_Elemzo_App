@@ -1,6 +1,6 @@
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -14,6 +14,8 @@ from backend.services.faiss_recommender import (
     _clamp,
     _STATE,
     _FEATURE_NAMES,
+    _pseudo_seed_from_song_ids,
+    recommend_by_vector,
 )
 
 RATING_TYPES = {
@@ -70,18 +72,20 @@ def _liked_song_ids(db: Session, user_id: int) -> List[int]:
     return [r[0] for r in rows]
 
 
-def recompute_profile_vector(user_id: int, db: Session) -> Optional[List[float]]:
-    liked_ids = _liked_song_ids(db, user_id)
+def _rated_song_ids(db: Session, user_id: int) -> List[int]:
+    rows = (
+        db.query(UserInteraction.song_id)
+        .filter(
+            UserInteraction.user_id == user_id,
+            UserInteraction.interaction_type.in_([InteractionTypeEnum.like, InteractionTypeEnum.dislike]),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
 
-    profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
-    if profile is None:
-        profile = UserProfile(user_id=user_id)
-        db.add(profile)
 
-    if not liked_ids:
-        profile.profile_vector = None
-        profile.last_updated = datetime.now(timezone.utc)
-        db.commit()
+def _average_vector_for_song_ids(song_ids: Sequence[int], db: Session) -> Optional[np.ndarray]:
+    if not song_ids:
         return None
 
     _ensure_index(db)
@@ -99,13 +103,10 @@ def recompute_profile_vector(user_id: int, db: Session) -> Optional[List[float]]
             AudioFeatures.spectral_bandwidth,
         )
         .join(AudioFeatures, AudioFeatures.song_id == Song.id)
-        .filter(Song.id.in_(liked_ids))
+        .filter(Song.id.in_(song_ids))
         .all()
     )
     if not rows:
-        profile.profile_vector = None
-        profile.last_updated = datetime.now(timezone.utc)
-        db.commit()
         return None
 
     global_medians = _STATE.global_medians or {name: 0.0 for name in _FEATURE_NAMES}
@@ -121,11 +122,120 @@ def recompute_profile_vector(user_id: int, db: Session) -> Optional[List[float]]
     norm = float(np.linalg.norm(avg))
     if norm > 1e-12:
         avg = avg / norm
+    return avg
+
+
+def _average_embedding_for_song_ids(song_ids: Sequence[int], db: Session) -> Optional[np.ndarray]:
+    """Same averaging idea as _average_vector_for_song_ids, but over the
+    Discogs-EffNet embedding_vector. Only songs that actually have one
+    contribute - if none of the given songs are enriched yet, returns None,
+    which callers pass straight through as query_embedding=None so the
+    embedding term is simply skipped (see faiss_recommender._search_and_rank)."""
+    if not song_ids:
+        return None
+
+    rows = (
+        db.query(AudioFeatures.embedding_vector)
+        .filter(AudioFeatures.song_id.in_(song_ids), AudioFeatures.embedding_vector.isnot(None))
+        .all()
+    )
+    vectors = [np.asarray(e, dtype=np.float32) for (e,) in rows if e]
+    if not vectors:
+        return None
+
+    avg = np.mean(np.vstack(vectors), axis=0)
+    return avg
+
+
+def recompute_profile_vector(user_id: int, db: Session) -> Optional[List[float]]:
+    liked_ids = _liked_song_ids(db, user_id)
+
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+    if profile is None:
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+
+    avg = _average_vector_for_song_ids(liked_ids, db)
+    if avg is None:
+        profile.profile_vector = None
+        profile.last_updated = datetime.now(timezone.utc)
+        db.commit()
+        return None
 
     profile.profile_vector = [float(x) for x in avg]
     profile.last_updated = datetime.now(timezone.utc)
     db.commit()
     return profile.profile_vector
+
+
+def _reference_stats_for_song_ids(song_ids: Sequence[int], db: Session) -> dict:
+    """A small, human-readable summary of a set of songs (genre_family +
+    average raw tempo/energy/danceability/valence) so the UI can show why a
+    recommendation was made, even for unfamiliar artists/tracks."""
+    genre_family, _cluster_id = _pseudo_seed_from_song_ids(song_ids, db)
+
+    rows = (
+        db.query(AudioFeatures.tempo, AudioFeatures.energy, AudioFeatures.danceability, AudioFeatures.valence)
+        .filter(AudioFeatures.song_id.in_(song_ids))
+        .all()
+    ) if song_ids else []
+
+    sums = {"tempo": 0.0, "energy": 0.0, "danceability": 0.0, "valence": 0.0}
+    counted = {"tempo": 0, "energy": 0, "danceability": 0, "valence": 0}
+    for tempo, energy, danceability, valence in rows:
+        for name, value in (("tempo", tempo), ("energy", energy), ("danceability", danceability), ("valence", valence)):
+            if value is not None:
+                sums[name] += float(value)
+                counted[name] += 1
+
+    return {
+        "genre_family": genre_family,
+        **{name: round(sums[name] / counted[name], 3) if counted[name] else None for name in sums},
+    }
+
+
+def recommend_for_user(user_id: int, db: Session, limit: int = 8) -> Optional[List[dict]]:
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+    if profile is None or profile.profile_vector is None:
+        return None
+
+    rated_ids = _rated_song_ids(db, user_id)
+    liked_ids = _liked_song_ids(db, user_id)
+    genre_family_hint, cluster_id_hint = _pseudo_seed_from_song_ids(liked_ids, db)
+    query_embedding = _average_embedding_for_song_ids(liked_ids, db)
+    return recommend_by_vector(
+        profile.profile_vector,
+        db,
+        limit=limit,
+        exclude_song_ids=rated_ids,
+        genre_family_hint=genre_family_hint,
+        cluster_id_hint=cluster_id_hint,
+        query_embedding=query_embedding,
+    )
+
+
+def recommend_for_song_ids(
+    song_ids: Sequence[int],
+    db: Session,
+    limit: int = 6,
+    extra_exclude_ids: Optional[Sequence[int]] = None,
+) -> Optional[List[dict]]:
+    vec = _average_vector_for_song_ids(list(song_ids), db)
+    if vec is None:
+        return None
+
+    genre_family_hint, cluster_id_hint = _pseudo_seed_from_song_ids(song_ids, db)
+    query_embedding = _average_embedding_for_song_ids(list(song_ids), db)
+    exclude = set(song_ids) | set(extra_exclude_ids or [])
+    return recommend_by_vector(
+        vec,
+        db,
+        limit=limit,
+        exclude_song_ids=exclude,
+        genre_family_hint=genre_family_hint,
+        cluster_id_hint=cluster_id_hint,
+        query_embedding=query_embedding,
+    )
 
 
 def get_favorites(user_id: int, db: Session) -> Dict[str, List[dict]]:

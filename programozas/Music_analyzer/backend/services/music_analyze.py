@@ -395,6 +395,8 @@ def analyze_music(file_path: str, user_token=None):
     except Exception:
         cover_file = None
 
+    embedding = model_genres.get("genre_model_embedding")
+
     result = {
         "title": title,
         "artist": artist,
@@ -404,6 +406,7 @@ def analyze_music(file_path: str, user_token=None):
         "genre_model_candidates": model_genres.get("genre_model_candidates"),
         "genre_model_macro": model_genres.get("genre_model_macro"),
         "genre_model_name": model_genres.get("genre_model_name"),
+        "embedding_vector": embedding.tolist() if embedding is not None else None,
         "genre_source": (
             f"model:{model_genres.get('genre_model_name')}" if preferred_genre else (
                 "local_heuristic" if genre == "Unknown Genre" else "tag_or_filename"

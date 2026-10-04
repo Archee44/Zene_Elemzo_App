@@ -163,14 +163,12 @@ def predict_valence_arousal(filename: str) -> Optional[Dict]:
             if vec.size >= 2:
                 a_raw, v_raw = float(vec[0]), float(vec[1])
                 def _to01(x: float) -> float:
-                    if 0.0 <= x <= 1.0:
-                        return x
-                    if -1.25 <= x <= 1.25:
-                        x = (x + 1.0) / 2.0
-                        return float(min(max(x, 0.0), 1.0))
-                    import math
-                    x = 1.0 / (1.0 + math.exp(-x))
-                    return float(min(max(x, 0.0), 1.0))
+                    # This DEAM-trained head regresses on the dataset's native
+                    # 1-9 SAM (Self-Assessment Manikin) annotation scale, not
+                    # 0-1 or an unbounded logit - confirmed against Essentia's
+                    # own model docs ("range [1, 9]"). A raw output of ~5 is
+                    # neutral/mid-scale, not an extreme value.
+                    return float(min(max((x - 1.0) / 8.0, 0.0), 1.0))
                 vals.append((_to01(a_raw), _to01(v_raw)))
 
         if not vals:

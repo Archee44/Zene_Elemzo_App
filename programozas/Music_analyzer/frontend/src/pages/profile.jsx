@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
-import { Text, Group, Stack, Progress, Avatar, Button, Badge, TextInput, Loader } from "@mantine/core";
+import { Text, Group, Stack, Progress, Avatar, Button, Badge, TextInput, Loader, Select } from "@mantine/core";
 import { useMantineColorScheme } from "@mantine/core";
 import {
   IconLayoutDashboard,
@@ -19,6 +19,8 @@ import {
   IconCheck,
   IconTrash,
   IconDownload,
+  IconSparkles,
+  IconExternalLink,
 } from "@tabler/icons-react";
 import DonutChart from "../components/DonutChart.jsx";
 import SectionCard from "../components/SectionCard.jsx";
@@ -53,6 +55,7 @@ const TABS = [
   { key: "overview", label: "Áttekintés", icon: IconLayoutDashboard },
   { key: "playlists", label: "Playlistjeim", icon: IconPlaylist },
   { key: "favorites", label: "Kedvenceim", icon: IconHeart },
+  { key: "foryou", label: "Neked ajánljuk", icon: IconSparkles },
   { key: "taste", label: "Ízlésprofil", icon: IconChartRadar },
   { key: "settings", label: "Fiókbeállítások", icon: IconSettings },
 ];
@@ -92,7 +95,13 @@ export default function Profile() {
   const [favoritesLoading, setFavoritesLoading] = useState(false);
   const [taste, setTaste] = useState(null);
   const [tasteLoading, setTasteLoading] = useState(false);
+  const [recommendations, setRecommendations] = useState([]);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
+  const [recommendationsReady, setRecommendationsReady] = useState(true);
+  const [recommendationsReference, setRecommendationsReference] = useState(null);
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogGenre, setCatalogGenre] = useState("");
+  const [catalogGenreOptions, setCatalogGenreOptions] = useState([]);
   const [catalogResults, setCatalogResults] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [ratingBusyId, setRatingBusyId] = useState(null);
@@ -119,28 +128,57 @@ export default function Profile() {
       .finally(() => setTasteLoading(false));
   };
 
+  const fetchRecommendations = () => {
+    if (!authHeaders) return;
+    setRecommendationsLoading(true);
+    axios
+      .get(`${API_BASE}/recommend-for-me`, { headers: authHeaders })
+      .then((res) => {
+        setRecommendations(res.data.recommendations || []);
+        setRecommendationsReady(res.data.ready);
+        setRecommendationsReference(res.data.reference || null);
+      })
+      .catch(() => {
+        setRecommendations([]);
+        setRecommendationsReady(false);
+        setRecommendationsReference(null);
+      })
+      .finally(() => setRecommendationsLoading(false));
+  };
+
   useEffect(() => {
     if (active === "favorites" && user) fetchFavorites();
     if (active === "taste" && user) fetchTaste();
+    if (active === "foryou" && user) fetchRecommendations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, user]);
 
   useEffect(() => {
+    axios
+      .get(`${API_BASE}/catalog-genres`)
+      .then((res) => setCatalogGenreOptions(res.data.genres || []))
+      .catch(() => setCatalogGenreOptions([]));
+  }, []);
+
+  useEffect(() => {
     const q = catalogQuery.trim();
-    if (!q) {
+    if (!q && !catalogGenre) {
       setCatalogResults([]);
       return;
     }
     setCatalogLoading(true);
     const handle = setTimeout(() => {
+      const params = {};
+      if (q) params.q = q;
+      if (catalogGenre) params.genre_family = catalogGenre;
       axios
-        .get(`${API_BASE}/catalog-search`, { params: { q } })
+        .get(`${API_BASE}/catalog-search`, { params })
         .then((res) => setCatalogResults(res.data.results || []))
         .catch(() => setCatalogResults([]))
         .finally(() => setCatalogLoading(false));
     }, 350);
     return () => clearTimeout(handle);
-  }, [catalogQuery]);
+  }, [catalogQuery, catalogGenre]);
 
   const handleRate = async (songId, rating) => {
     if (!authHeaders) return;
@@ -149,6 +187,7 @@ export default function Profile() {
       await axios.post(`${API_BASE}/songs/${songId}/rate`, { rating }, { headers: authHeaders });
       fetchFavorites();
       if (active === "taste") fetchTaste();
+      if (active === "foryou") fetchRecommendations();
     } catch {
       // silently ignore - the buttons stay in their previous state
     } finally {
@@ -168,6 +207,8 @@ export default function Profile() {
   const [openPlaylistId, setOpenPlaylistId] = useState(null);
   const [openPlaylistData, setOpenPlaylistData] = useState(null);
   const [openPlaylistLoading, setOpenPlaylistLoading] = useState(false);
+  const [openPlaylistRecs, setOpenPlaylistRecs] = useState(null);
+  const [openPlaylistRecsLoading, setOpenPlaylistRecsLoading] = useState(false);
 
   const fetchMyPlaylists = () => {
     if (!authHeaders) return;
@@ -234,6 +275,7 @@ export default function Profile() {
     if (openPlaylistId === id) {
       setOpenPlaylistId(null);
       setOpenPlaylistData(null);
+      setOpenPlaylistRecs(null);
       return;
     }
     setOpenPlaylistId(id);
@@ -243,6 +285,14 @@ export default function Profile() {
       .then((res) => setOpenPlaylistData(res.data))
       .catch(() => setOpenPlaylistData(null))
       .finally(() => setOpenPlaylistLoading(false));
+
+    setOpenPlaylistRecs(null);
+    setOpenPlaylistRecsLoading(true);
+    axios
+      .get(`${API_BASE}/playlists/${id}/recommend`, { headers: authHeaders })
+      .then((res) => setOpenPlaylistRecs(res.data))
+      .catch(() => setOpenPlaylistRecs(null))
+      .finally(() => setOpenPlaylistRecsLoading(false));
   };
 
   const handleDeletePlaylist = async (id) => {
@@ -265,6 +315,10 @@ export default function Profile() {
       axios
         .get(`${API_BASE}/playlists/${openPlaylistId}`, { headers: authHeaders })
         .then((res) => setOpenPlaylistData(res.data))
+        .catch(() => {});
+      axios
+        .get(`${API_BASE}/playlists/${openPlaylistId}/recommend`, { headers: authHeaders })
+        .then((res) => setOpenPlaylistRecs(res.data))
         .catch(() => {});
     }
   };
@@ -352,6 +406,90 @@ export default function Profile() {
       </Group>
     </SectionCard>
   );
+
+  const ReferenceSummary = ({ reference }) => {
+    if (!reference || (!reference.genre_family && reference.tempo == null)) return null;
+    const parts = [];
+    if (reference.genre_family) parts.push(`stílus: ${reference.genre_family}`);
+    if (reference.tempo != null) parts.push(`~${Math.round(reference.tempo)} BPM`);
+    if (reference.danceability != null) parts.push(`${Math.round(reference.danceability * 100)}% táncolhatóság`);
+    return (
+      <Text size="xs" style={{ color: textDim, marginBottom: 4 }}>
+        Ez alapján ajánlunk ({parts.join(" · ")}) - minden szám alatt látod, hogyan viszonyul ehhez.
+      </Text>
+    );
+  };
+
+  const RecommendationRow = ({ r, reference, onRate = handleRate }) => {
+    const genreMatch = !!(reference?.genre_family && r.genre_family && reference.genre_family === r.genre_family);
+    const tempoDelta = reference?.tempo != null && r.tempo != null ? Math.round(r.tempo - reference.tempo) : null;
+    return (
+    <SectionCard key={r.id}>
+      <Group justify="space-between" wrap="nowrap">
+        <div style={{ minWidth: 0 }}>
+          <Text fw={600} lineClamp={1}>{r.title}</Text>
+          <Text size="sm" style={{ color: textDim }}>{r.artist}</Text>
+          <Group gap={6} mt={4} wrap="wrap">
+            {r.genre_family && (
+              <Badge size="xs" variant={genreMatch ? "filled" : "light"} color={dark ? "violet" : "yellow"} style={!genreMatch ? { color: textDim } : undefined}>
+                {r.genre_family}
+              </Badge>
+            )}
+            {r.tempo != null && (
+              <Badge size="xs" variant="light" color="gray" style={{ color: textDim }}>
+                {Math.round(r.tempo)} BPM{tempoDelta !== null ? ` (${tempoDelta >= 0 ? "+" : ""}${tempoDelta} a profilodhoz képest)` : ""}
+              </Badge>
+            )}
+            {r.danceability != null && (
+              <Badge size="xs" variant="light" color="gray" style={{ color: textDim }}>
+                {Math.round(r.danceability * 100)}% táncolhatóság
+              </Badge>
+            )}
+          </Group>
+        </div>
+        <Group gap={6} wrap="nowrap">
+          {r.url && (
+            <Button
+              component="a"
+              href={r.url}
+              target="_blank"
+              rel="noreferrer"
+              size="xs"
+              variant="subtle"
+              radius="xl"
+              color={dark ? "violet" : "yellow"}
+              px={8}
+            >
+              <IconExternalLink size={16} />
+            </Button>
+          )}
+          <Button
+            size="xs"
+            variant={likedIds.has(r.id) ? "filled" : "light"}
+            radius="xl"
+            color={dark ? "violet" : "yellow"}
+            px={8}
+            loading={ratingBusyId === r.id}
+            onClick={() => onRate(r.id, "like")}
+          >
+            <IconThumbUp size={16} />
+          </Button>
+          <Button
+            size="xs"
+            variant={dislikedIds.has(r.id) ? "filled" : "subtle"}
+            radius="xl"
+            color="gray"
+            px={8}
+            loading={ratingBusyId === r.id}
+            onClick={() => onRate(r.id, "dislike")}
+          >
+            <IconThumbDown size={16} />
+          </Button>
+        </Group>
+      </Group>
+    </SectionCard>
+    );
+  };
 
   return (
     <div style={{ width: "100%", maxWidth: 1100, margin: "0 auto", padding: "0 16px" }}>
@@ -598,6 +736,26 @@ export default function Profile() {
                             ))}
                           </Stack>
                         )}
+
+                        <Text fw={700} size="sm" style={{ marginTop: 16, marginBottom: 8 }}>
+                          Hasonló számok ehhez a playlisthez
+                        </Text>
+                        <ReferenceSummary reference={openPlaylistRecs?.reference} />
+                        {openPlaylistRecsLoading ? (
+                          <Loader size="xs" />
+                        ) : openPlaylistRecs?.ready === false && openPlaylistRecs?.reason === "no_matched_songs" ? (
+                          <Text size="xs" style={{ color: textDim }}>
+                            Ehhez a playlisthez még nincs egyeztetett szám a katalógusban.
+                          </Text>
+                        ) : openPlaylistRecs?.ready === false ? (
+                          <Text size="xs" style={{ color: textDim }}>Az ajánló jelenleg nem elérhető.</Text>
+                        ) : (
+                          <Stack gap={8}>
+                            {(openPlaylistRecs?.recommendations || []).map((r) => (
+                              <RecommendationRow key={r.id} r={r} reference={openPlaylistRecs?.reference} onRate={handleRatePlaylistSong} />
+                            ))}
+                          </Stack>
+                        )}
                       </div>
                     )}
                   </SectionCard>
@@ -654,16 +812,32 @@ export default function Profile() {
             <Stack gap={16}>
               <SectionCard>
                 <Text fw={700} size="lg" style={{ marginBottom: 8 }}>Keress számot értékeléshez</Text>
-                <TextInput
-                  placeholder="Cím vagy előadó..."
-                  value={catalogQuery}
-                  onChange={(e) => setCatalogQuery(e.currentTarget.value)}
-                  size="sm"
-                  radius="md"
-                  style={{ marginBottom: 10 }}
-                />
+                <Group gap={8} align="flex-start" wrap="wrap" style={{ marginBottom: 10 }}>
+                  <TextInput
+                    placeholder="Cím vagy előadó..."
+                    value={catalogQuery}
+                    onChange={(e) => setCatalogQuery(e.currentTarget.value)}
+                    size="sm"
+                    radius="md"
+                    style={{ flex: 1, minWidth: 180 }}
+                  />
+                  <Select
+                    placeholder="Stílus szerint..."
+                    data={catalogGenreOptions.map((g) => ({
+                      value: g.label,
+                      label: `${g.label.replace(/-/g, " ")} (${g.count})`,
+                    }))}
+                    value={catalogGenre || null}
+                    onChange={(value) => setCatalogGenre(value || "")}
+                    clearable
+                    searchable
+                    size="sm"
+                    radius="md"
+                    style={{ minWidth: 200 }}
+                  />
+                </Group>
                 {catalogLoading && <Loader size="xs" />}
-                {!catalogLoading && catalogQuery.trim() && catalogResults.length === 0 && (
+                {!catalogLoading && (catalogQuery.trim() || catalogGenre) && catalogResults.length === 0 && (
                   <Text size="sm" style={{ color: textDim }}>Nincs találat.</Text>
                 )}
                 <Stack gap={8}>
@@ -731,6 +905,34 @@ export default function Profile() {
                     </Group>
                   </Group>
                 </SectionCard>
+              ))}
+            </Stack>
+          ))}
+
+          {active === "foryou" && (!user ? (
+            <EmptyCta
+              title="Jelentkezz be"
+              desc="Bejelentkezve itt jelennek meg a neked ajánlott számok, az ízlésprofilod alapján."
+              ctaLabel="Bejelentkezés Google-lel"
+              onClick={login}
+            />
+          ) : recommendationsLoading ? (
+            <Loader size="sm" />
+          ) : !recommendationsReady ? (
+            <SectionCard>
+              <Text fw={700} style={{ marginBottom: 4 }}>Még nincs elég adat</Text>
+              <Text size="sm" style={{ color: textDim }}>
+                Jelölj kedvencnek pár számot a "Kedvenceim" fülön, és itt megjelennek a neked ajánlott számok.
+              </Text>
+            </SectionCard>
+          ) : (
+            <Stack gap={12}>
+              <ReferenceSummary reference={recommendationsReference} />
+              {recommendations.length === 0 && (
+                <Text size="sm" style={{ color: textDim }}>Jelenleg nincs új ajánlás - próbálj kedvelni még pár számot.</Text>
+              )}
+              {recommendations.map((r) => (
+                <RecommendationRow key={r.id} r={r} reference={recommendationsReference} />
               ))}
             </Stack>
           ))}
