@@ -351,6 +351,8 @@ export default function Profile() {
   const cardBg = dark ? "#0C1A2A" : "#FFF8E7";
   const cardBorder = dark ? "#483d8b" : "#FFD966";
   const textDim = dark ? "rgba(255,255,255,0.65)" : "rgba(12,26,42,0.6)";
+  // Same look as the left-hand menu panel, reused for the header and the content column.
+  const panelStyle = { background: cardBg, border: `2px solid ${cardBorder}`, borderRadius: 15 };
 
   const donutColors = dark
     ? ["#a78bfa", "#67E8F9", "#34D399", "#FBBF24", "#F59E0B"]
@@ -413,11 +415,6 @@ export default function Profile() {
     if (reference.genre_family) parts.push(`stílus: ${reference.genre_family}`);
     if (reference.tempo != null) parts.push(`~${Math.round(reference.tempo)} BPM`);
     if (reference.danceability != null) parts.push(`${Math.round(reference.danceability * 100)}% táncolhatóság`);
-    return (
-      <Text size="xs" style={{ color: textDim, marginBottom: 4 }}>
-        Ez alapján ajánlunk ({parts.join(" · ")}) - minden szám alatt látod, hogyan viszonyul ehhez.
-      </Text>
-    );
   };
 
   const RecommendationRow = ({ r, reference, onRate = handleRate }) => {
@@ -494,7 +491,7 @@ export default function Profile() {
   return (
     <div style={{ width: "100%", maxWidth: 1100, margin: "0 auto", padding: "0 16px" }}>
       {/* Fejléc: avatar + alapadatok */}
-      <SectionCard style={{ marginBottom: 20 }}>
+      <SectionCard style={{ marginBottom: 20, ...panelStyle }}>
         {!loading && !user ? (
           <Group align="flex-start" wrap="nowrap" gap={16}>
             <div
@@ -614,8 +611,9 @@ export default function Profile() {
           </Stack>
         </div>
 
-        {/* Tartalom */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Tartalom - saját háttérpanel, mint a bal oldali menünek, hogy a fejlécek és a
+            szürke segédszövegek ne olvadjanak bele a világos háttérképbe */}
+        <div style={{ flex: 1, minWidth: 0, ...panelStyle, padding: 16 }}>
           {active === "overview" && (
             <Stack gap={16}>
               <SectionCard>
@@ -628,11 +626,7 @@ export default function Profile() {
                 </Group>
               </SectionCard>
 
-              <EmptyCta
-                title="Importálj egy playlistet"
-                desc="Kösd össze a Google vagy Spotify fiókod, és importáld a kedvenc playlistjeidet - ez alapján is finomodik az ajánló."
-                ctaLabel="Playlist importálása"
-              />
+
             </Stack>
           )}
 
@@ -955,7 +949,7 @@ export default function Profile() {
           ) : (
             <Stack gap={16}>
               <SectionCard>
-                <Text fw={700} size="lg" style={{ marginBottom: 8 }}>Kedvelt műfajok ({taste.liked_count} szám alapján)</Text>
+                <Text fw={700} size="lg" style={{ marginBottom: 8 }}>Kedvelt műfajok</Text>
                 <Group gap={20} align="center">
                   <DonutChart size={160} thickness={24} data={taste.genres} colors={donutColors} />
                   <div style={{ flex: 1 }}>
@@ -975,7 +969,7 @@ export default function Profile() {
               </SectionCard>
 
               <SectionCard>
-                <Text fw={700} size="lg" style={{ marginBottom: 12 }}>Jellemző-profil (kedvelt számok átlaga)</Text>
+                <Text fw={700} size="lg" style={{ marginBottom: 12 }}>Jellemző-profil</Text>
                 {Object.entries(FEATURE_LABELS).map(([key, label]) => {
                   const value = taste.features?.[key];
                   return (

@@ -165,7 +165,10 @@ export default function MusicAnalyzer() {
   }, [result?.path]);
   
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 100px)", marginTop: 15 }}>
+    // width: 100% matters: AppShell.Main is a flex row, so without it this wrapper (and the
+    // card's own width: 100%) is sized by its content, and the card kept changing width as the
+    // analysis results rendered. With a definite width the card stays at maxWidth throughout.
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: "100%", minHeight: "calc(100vh - 100px)", marginTop: 15 }}>
       <Card shadow="xl" padding="xl" radius="lg" withBorder style={{ width: "100%", maxWidth: 800, backgroundColor: dark ? "#0C1A2A" : "#FFF8E7", color: dark ? "#FFFFFF" : "#0C1A2A", borderColor: dark ? "#483d8b" : "#FFD966" }}>
         <h1 style={{ textAlign: "center", marginBottom: 28, fontSize: "3rem", fontWeight: 700 }}>Zeneelemző</h1>
         <Text size="lg" style={{ textAlign: "center", opacity: 0.8, marginBottom: 16 }}>Tölts fel egy MP3 fájlt, hogy elemezzük a zenei jellemzőit.</Text>
